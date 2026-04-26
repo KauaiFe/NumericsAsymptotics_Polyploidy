@@ -133,9 +133,6 @@ The script writes:
 
 ## Notes
 
-- The script is intentionally self-contained and does not import the older
-  workspace figure scripts.
 - It is the cleaned version of the code used for the manuscript comparison
   between the asymptotic approximation and the full model.
-- If you want the same naming convention used in the manuscript, use
-  `--output Figure3.pdf`.
+
