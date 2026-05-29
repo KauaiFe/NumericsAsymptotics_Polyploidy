@@ -88,6 +88,9 @@ patches below `Rc` contract, whereas patches above `Rc` generate outward spread.
 If `scipy` is unavailable, the script falls back to a pure-NumPy tridiagonal
 solver.
 
+On systems where `python` is not mapped to Python 3, use `python3` in the
+commands below.
+
 ## Usage
 
 Run the manuscript-style comparison:
@@ -95,6 +98,10 @@ Run the manuscript-style comparison:
 ```bash
 python NumericsAsymptoticsPolyploid.py --output Figure3.pdf
 ```
+
+This computes the numerical critical radius for the full radial PDE and plots
+it against the small-`\upsilon` asymptotic approximation
+`sigma * sqrt(1 - phi^2) / (2 * upsilon)`.
 
 Save the figure and the underlying table:
 
@@ -118,8 +125,23 @@ Run a smaller sweep as a quick test:
 ```bash
 python NumericsAsymptoticsPolyploid.py \
   --output test.pdf \
-  --upsilon-count 5 \
-  --phis 0.1 0.3
+  --upsilon-min 0.015 \
+  --upsilon-max 0.02 \
+  --upsilon-count 3 \
+  --phis 0.1
+```
+
+Run lightweight validation checks without producing a figure:
+
+```bash
+python NumericsAsymptoticsPolyploid.py --self-test
+```
+
+Run a short convergence check comparing `dr = 0.20, dt = 0.25` with
+`dr = 0.10, dt = 0.10` for one representative parameter point:
+
+```bash
+python NumericsAsymptoticsPolyploid.py --convergence-check
 ```
 
 ## Output
@@ -133,6 +155,13 @@ The script writes:
 
 ## Notes
 
+- The script is intentionally self-contained and does not import the older
+  workspace figure scripts.
 - It is the cleaned version of the code used for the manuscript comparison
   between the asymptotic approximation and the full model.
-
+- If you want the same naming convention used in the manuscript, use
+  `--output Figure3.pdf`.
+- Numerical thresholds near the expansion/collapse boundary can be sensitive to
+  the final integration time and the grid. For manuscript-quality values,
+  check convergence by reducing `dr` and `dt`, and increase `--max-time-chunks`
+  for cases that remain close to the threshold.
