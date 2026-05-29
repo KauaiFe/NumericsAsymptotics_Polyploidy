@@ -21,7 +21,7 @@ The numerical critical radius R_c is the smallest R0 for which the patch
 expands instead of collapsing. The asymptotic comparison curve is the
 small-upsilon approximation
 
-    R_c ~ sigma * sqrt(1 - phi^2) / (2 * upsilon).
+    R_c ~ sigma * sqrt((1 - phi) / 2) / upsilon.
 
 The default parameters reproduce the sweep discussed in the manuscript:
 phi in {0.1, 0.3, 0.5}, sigma = 1, and upsilon in [0.001, 0.02].
@@ -30,6 +30,8 @@ phi in {0.1, 0.3, 0.5}, sigma = 1, and upsilon in [0.001, 0.02].
 import argparse
 import csv
 import math
+import os
+import tempfile
 import time
 from dataclasses import dataclass, replace
 from pathlib import Path
@@ -96,24 +98,24 @@ DEFAULT_SOLVER_CONFIG = SolverConfig()
 
 @dataclass(frozen=True)
 class ReactionCoefficients:
-    """Precomputed coefficients for the full local reaction term f(y)."""
+    """Precomputed coefficients for the corrected local reaction term f(y)."""
 
     upsilon: float
     phi: float
-    q2: float
-    q1: float
-    d2: float
-    d1: float
+    c3: float
+    c2: float
+    c1: float
+    c0: float
 
     @classmethod
     def from_parameters(cls, upsilon: float, phi: float) -> "ReactionCoefficients":
         return cls(
             upsilon=upsilon,
             phi=phi,
-            q2=2.0 * phi + upsilon - 2.0,
-            q1=1.0 + upsilon - phi,
-            d2=2.0 - 2.0 * phi - upsilon,
-            d1=2.0 * (phi - 1.0),
+            c3=2.0 * phi + upsilon - 2.0,
+            c2=3.0 * (1.0 - phi),
+            c1=phi - 2.0 * upsilon - 1.0,
+            c0=upsilon,
         )
 
 
@@ -127,40 +129,21 @@ class ComparisonCurve:
     asymptotic_radii: np.ndarray
 
 
-def reaction_denominator(
-    y: np.ndarray | float,
-    upsilon: float,
-    phi: float,
-) -> np.ndarray | float:
-    """Denominator D(y) from the full manuscript reaction term."""
-
-    return (
-        (1.0 - y) ** 2
-        + 2.0 * phi * (1.0 - y) * y
-        + (1.0 - upsilon) * y * y
-    )
-
-
 def full_reaction(
     y: np.ndarray | float,
     upsilon: float,
     phi: float,
 ) -> np.ndarray | float:
     """
-    Full local reaction term f(y) used in the numerical comparison.
-
-    This corresponds to the non-cubic local dynamics discussed before the
-    asymptotic reduction in the manuscript.
+    Corrected local reaction term f(y) used in the numerical comparison.
     """
 
-    denominator = reaction_denominator(y, upsilon, phi)
-    numerator = (
-        upsilon * (1.0 - y) ** 2
-        + phi * (1.0 - y) * y
-        + (1.0 - upsilon) * y * y
-        - y * denominator
+    return (
+        upsilon
+        + (phi - 2.0 * upsilon - 1.0) * y
+        + 3.0 * (1.0 - phi) * y * y
+        + (2.0 * phi + upsilon - 2.0) * y * y * y
     )
-    return numerator / denominator
 
 
 def asymptotic_critical_radius(
@@ -169,17 +152,17 @@ def asymptotic_critical_radius(
     sigma: float,
 ) -> float:
     """
-    Small-upsilon asymptotic critical radius from manuscript Eq. (21).
+    Small-upsilon asymptotic critical radius from the manuscript.
     """
 
     if upsilon <= 0.0 or not (0.0 < phi < 1.0):
         return math.nan
 
-    prefactor = 1.0 - phi * phi
+    prefactor = (1.0 - phi) / 2.0
     if prefactor <= 0.0:
         return math.nan
 
-    return sigma * math.sqrt(prefactor) / (2.0 * upsilon)
+    return sigma * math.sqrt(prefactor) / upsilon
 
 
 class TridiagonalSolver:
@@ -190,13 +173,20 @@ class TridiagonalSolver:
     fallback is prepared once and reused.
     """
 
-    def __init__(self, lower: np.ndarray, diagonal: np.ndarray, upper: np.ndarray):
+    def __init__(
+        self,
+        lower: np.ndarray,
+        diagonal: np.ndarray,
+        upper: np.ndarray,
+        *,
+        use_scipy: bool = True,
+    ):
         self.lower = np.array(lower, dtype=np.float64, copy=True)
         self.diagonal = np.array(diagonal, dtype=np.float64, copy=True)
         self.upper = np.array(upper, dtype=np.float64, copy=True)
 
         self._gttrs = None
-        if get_lapack_funcs is not None:
+        if use_scipy and get_lapack_funcs is not None:
             gttrf = get_lapack_funcs("gttrf", dtype=np.float64)
             self._gttrs = get_lapack_funcs("gttrs", dtype=np.float64)
             dl, d, du, du2, ipiv, info = gttrf(
@@ -329,22 +319,12 @@ class RadialSemiImplicitSolver:
         out: np.ndarray,
     ) -> None:
         np.multiply(state, state, out=self.work1)
-
-        np.copyto(out, self.work1)
-        out *= coeffs.q2
-        out += coeffs.q1 * state
-        out -= coeffs.upsilon
-
-        np.copyto(self.work2, state)
-        self.work2 -= 1.0
-        out *= self.work2
-
-        np.copyto(self.work2, self.work1)
-        self.work2 *= coeffs.d2
-        self.work2 += coeffs.d1 * state
-        self.work2 += 1.0
-
-        np.divide(out, self.work2, out=out)
+        np.multiply(self.work1, state, out=self.work2)
+        np.copyto(out, self.work2)
+        out *= coeffs.c3
+        out += coeffs.c2 * self.work1
+        out += coeffs.c1 * state
+        out += coeffs.c0
 
     def occupied_radius(self, state: np.ndarray) -> float:
         """
@@ -377,6 +357,11 @@ class RadialSemiImplicitSolver:
     ) -> tuple[bool, dict[str, float | int | str]]:
         """
         Simulate one top-hat patch and classify it as expanding or collapsing.
+
+        Classification is intentionally based on conservative front movement
+        checks. Runs that reach the final drift fallback are close enough to
+        the threshold that they should be rechecked with a longer integration
+        time and finer `dr`/`dt` before drawing scientific conclusions.
         """
 
         state = self.state
@@ -515,6 +500,10 @@ class RadialSemiImplicitSolver:
             "radius_max": self.radius_max,
             "t_max": actual_t_max,
             "steps": total_steps,
+            "warning": (
+                "classified by final drift sign; rerun near-threshold cases "
+                "with longer integration time and finer dr/dt"
+            ),
         }
         if self.config.profile:
             diagnostics["elapsed_s"] = time.perf_counter() - run_start
@@ -816,6 +805,27 @@ def plot_curves(curves: list[ComparisonCurve], output_path: Path) -> None:
     filled circles for numerical Rc, open circles for asymptotic Rc.
     """
 
+    if "MPLCONFIGDIR" not in os.environ:
+        mpl_cache = Path(tempfile.gettempdir()) / "polyploid-matplotlib-cache"
+        try:
+            mpl_cache.mkdir(parents=True, exist_ok=True)
+        except OSError:
+            pass
+        else:
+            os.environ["MPLCONFIGDIR"] = str(mpl_cache)
+
+    if "XDG_CACHE_HOME" not in os.environ:
+        xdg_cache = Path(tempfile.gettempdir()) / "polyploid-cache"
+        try:
+            xdg_cache.mkdir(parents=True, exist_ok=True)
+        except OSError:
+            pass
+        else:
+            os.environ["XDG_CACHE_HOME"] = str(xdg_cache)
+
+    import matplotlib
+
+    matplotlib.use("Agg", force=True)
     import matplotlib.pyplot as plt
     from matplotlib.lines import Line2D
     from matplotlib.ticker import FormatStrFormatter, MaxNLocator
@@ -897,6 +907,130 @@ def plot_curves(curves: list[ComparisonCurve], output_path: Path) -> None:
         plt.show()
 
 
+def validate_reaction_implementation() -> None:
+    """
+    Check that the in-place vectorized reaction matches the scalar formula.
+    """
+
+    config = replace(DEFAULT_SOLVER_CONFIG, dr=0.1, dt=0.05)
+    solver = RadialSemiImplicitSolver(radius_max=1.0, sigma=1.0, config=config)
+    state = np.linspace(0.0, 1.0, solver.r.size, dtype=np.float64)
+    out = np.empty_like(state)
+
+    for upsilon, phi in ((0.005, 0.1), (0.02, 0.3), (0.05, 0.5)):
+        coeffs = ReactionCoefficients.from_parameters(upsilon, phi)
+        solver._reaction_inplace(state, coeffs, out)
+        expected = np.array(
+            [full_reaction(float(value), upsilon, phi) for value in state],
+            dtype=np.float64,
+        )
+        np.testing.assert_allclose(out, expected, rtol=1e-12, atol=1e-12)
+
+
+def validate_numpy_tridiagonal_solver() -> None:
+    """
+    Check the pure-NumPy tridiagonal fallback against a dense solve.
+    """
+
+    lower = np.array([-0.7, -0.5, -0.2], dtype=np.float64)
+    diagonal = np.array([2.0, 2.4, 2.1, 1.8], dtype=np.float64)
+    upper = np.array([-0.3, -0.4, -0.6], dtype=np.float64)
+    rhs = np.array([1.0, -0.5, 0.25, 2.0], dtype=np.float64)
+
+    dense = np.diag(diagonal) + np.diag(upper, 1) + np.diag(lower, -1)
+    expected = np.linalg.solve(dense, rhs)
+    out = np.empty_like(rhs)
+
+    solver = TridiagonalSolver(lower, diagonal, upper, use_scipy=False)
+    solver.solve(rhs, out)
+    np.testing.assert_allclose(out, expected, rtol=1e-12, atol=1e-12)
+
+
+def run_self_tests() -> None:
+    """Run lightweight deterministic validation checks."""
+
+    validate_reaction_implementation()
+    validate_numpy_tridiagonal_solver()
+    print("Self-tests passed: reaction equivalence and NumPy tridiagonal fallback.")
+
+
+def run_convergence_check(
+    sigma: float,
+    phi: float,
+    upsilon: float,
+    config: SolverConfig,
+    relative_tolerance: float,
+    absolute_tolerance: float,
+) -> None:
+    """
+    Compare one critical radius on coarse and finer space-time grids.
+
+    This is a short validation check, not a full convergence study.
+    """
+
+    print(
+        "Convergence check for "
+        f"phi={phi:.3f}, upsilon={upsilon:.5f}, sigma={sigma:.3f}"
+    )
+
+    coarse_config = replace(config, dr=0.20, dt=0.25, profile=False)
+    fine_config = replace(config, dr=0.10, dt=0.10, profile=False)
+
+    coarse_estimator = CriticalRadiusEstimator(sigma, coarse_config)
+    coarse_radius, coarse_metadata = coarse_estimator.find_critical_radius(
+        upsilon,
+        phi,
+    )
+
+    fine_estimator = CriticalRadiusEstimator(sigma, fine_config)
+    fine_radius, fine_metadata = fine_estimator.find_critical_radius(
+        upsilon,
+        phi,
+        radius_hint=coarse_radius,
+    )
+
+    difference = abs(fine_radius - coarse_radius)
+    scale = max(abs(fine_radius), 1.0)
+    relative_difference = difference / scale
+    allowed_difference = max(absolute_tolerance, relative_tolerance * scale)
+
+    print(
+        "  dr=0.20, dt=0.25: "
+        f"Rc={coarse_radius:.6f} "
+        f"({coarse_metadata['pde_solves']} PDE solves)"
+    )
+    print(
+        "  dr=0.10, dt=0.10: "
+        f"Rc={fine_radius:.6f} "
+        f"({fine_metadata['pde_solves']} PDE solves)"
+    )
+    print(
+        "  difference: "
+        f"{difference:.6f} ({100.0 * relative_difference:.2f}% of fine-grid Rc)"
+    )
+
+    if not (np.isfinite(coarse_radius) and np.isfinite(fine_radius)):
+        raise AssertionError("Convergence check failed: non-finite critical radius.")
+
+    if difference > allowed_difference:
+        raise AssertionError(
+            "Convergence check failed: coarse/fine critical radii differ by "
+            f"{difference:.6f}, above the allowed {allowed_difference:.6f}. "
+            "Near-threshold results should be rerun with smaller dr/dt and "
+            "longer integration time."
+        )
+
+    print(
+        "Convergence check passed within "
+        f"max({absolute_tolerance:.3f}, {relative_tolerance:.1%} of fine-grid Rc)."
+    )
+
+
+def require_positive(name: str, value: float) -> None:
+    if value <= 0.0:
+        raise SystemExit(f"{name} must be positive.")
+
+
 def parse_arguments() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description=(
@@ -955,9 +1089,67 @@ def parse_arguments() -> argparse.Namespace:
         help="Target bisection tolerance for the critical radius.",
     )
     parser.add_argument(
+        "--dr",
+        type=float,
+        default=DEFAULT_SOLVER_CONFIG.dr,
+        help="Radial grid spacing for the PDE solver.",
+    )
+    parser.add_argument(
+        "--dt",
+        type=float,
+        default=DEFAULT_SOLVER_CONFIG.dt,
+        help="Time step for the semi-implicit PDE solver.",
+    )
+    parser.add_argument(
+        "--max-time-chunks",
+        type=int,
+        default=DEFAULT_SOLVER_CONFIG.max_time_chunks,
+        help=(
+            "Maximum number of integration chunks before the final drift "
+            "classification is used. Increase this for borderline thresholds."
+        ),
+    )
+    parser.add_argument(
         "--profile",
         action="store_true",
         help="Print timing and PDE-solve diagnostics during the sweep.",
+    )
+    parser.add_argument(
+        "--self-test",
+        action="store_true",
+        help="Run lightweight internal validation tests and exit.",
+    )
+    parser.add_argument(
+        "--convergence-check",
+        action="store_true",
+        help=(
+            "Run a short coarse/fine critical-radius comparison with "
+            "dr=0.20, dt=0.25 versus dr=0.10, dt=0.10, then exit."
+        ),
+    )
+    parser.add_argument(
+        "--convergence-phi",
+        type=float,
+        default=0.1,
+        help="Phi value used by --convergence-check.",
+    )
+    parser.add_argument(
+        "--convergence-upsilon",
+        type=float,
+        default=0.02,
+        help="Upsilon value used by --convergence-check.",
+    )
+    parser.add_argument(
+        "--convergence-rtol",
+        type=float,
+        default=0.15,
+        help="Relative tolerance for --convergence-check.",
+    )
+    parser.add_argument(
+        "--convergence-atol",
+        type=float,
+        default=2.0,
+        help="Absolute tolerance for --convergence-check.",
     )
     return parser.parse_args()
 
@@ -965,13 +1157,43 @@ def parse_arguments() -> argparse.Namespace:
 def main() -> None:
     args = parse_arguments()
 
+    require_positive("--sigma", float(args.sigma))
+    require_positive("--dr", float(args.dr))
+    require_positive("--dt", float(args.dt))
+    require_positive("--radius-tolerance", float(args.radius_tolerance))
+    require_positive("--convergence-rtol", float(args.convergence_rtol))
+    require_positive("--convergence-atol", float(args.convergence_atol))
+    if args.upsilon_count < 1:
+        raise SystemExit("--upsilon-count must be at least 1.")
+    if args.max_time_chunks < 1:
+        raise SystemExit("--max-time-chunks must be at least 1.")
+
+    if args.self_test:
+        run_self_tests()
+        if not args.convergence_check:
+            return
+
     upsilons = np.linspace(args.upsilon_min, args.upsilon_max, args.upsilon_count)
     phis = tuple(float(value) for value in args.phis)
     config = replace(
         DEFAULT_SOLVER_CONFIG,
         radius_tolerance=args.radius_tolerance,
+        dr=args.dr,
+        dt=args.dt,
+        max_time_chunks=args.max_time_chunks,
         profile=args.profile,
     )
+
+    if args.convergence_check:
+        run_convergence_check(
+            sigma=float(args.sigma),
+            phi=float(args.convergence_phi),
+            upsilon=float(args.convergence_upsilon),
+            config=config,
+            relative_tolerance=float(args.convergence_rtol),
+            absolute_tolerance=float(args.convergence_atol),
+        )
+        return
 
     curves = compute_comparison_curves(
         sigma=float(args.sigma),
@@ -986,6 +1208,11 @@ def main() -> None:
         print(f"\nSaved table to: {args.csv.expanduser()}")
 
     print(f"\nSaved figure to: {args.output.expanduser()}")
+    print(
+        "\nNote: near-threshold classifications can depend on integration "
+        "time and grid resolution; validate important points by reducing "
+        "--dr and --dt or by running --convergence-check.",
+    )
     print("\nEstimated critical radii:\n")
     for curve in curves:
         print(f"phi = {curve.phi}")
