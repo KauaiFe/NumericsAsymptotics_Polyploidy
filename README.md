@@ -1,10 +1,10 @@
-# Numerical vs. Asymptotic Critical Radius
+# Numerical vs. Asymptotic Critical Radius for Fig. 3
 
 This folder contains a self-contained script for the comparison described in
-Section 5 of the manuscript: the numerical critical radius of the full radial
-mixed-ploidy model versus the small-`\upsilon` asymptotic approximation.
+Section 5 of the manuscript: the numerical critical radius of the radial
+continuous-time model versus the small-`\upsilon` asymptotic approximation.
 
-In the current manuscript source, this comparison appears as **Figure 3**.
+In the revised manuscript source, this comparison appears as **Fig. 3**.
 Older workspace files were named `Figure2.py` and `Figure2Truth.py`; this
 folder replaces that split with a single script that is easier to read, run,
 and upload to GitHub.
@@ -12,8 +12,10 @@ and upload to GitHub.
 ## Contents
 
 - `NumericsAsymptoticsPolyploid.py`: computes the numerical threshold from the
-  full radial PDE, evaluates the asymptotic approximation, and plots the
+  radial PDE, evaluates the asymptotic approximation, and plots the
   comparison.
+- `Figure3.pdf` and `Figure3.png`: current rendered versions of Fig. 3.
+- `Figure3_data.csv`: numerical and asymptotic values used to render Fig. 3.
 - `README.md`: usage notes and a short description of the model.
 
 ## Model summary
@@ -33,7 +35,18 @@ $$
 f(y),
 $$
 
-with top-hat initial data
+where the local continuous-time reaction term is
+
+$$
+f(y)
+=
+\upsilon
++(\phi-2\upsilon-1)y
++3(1-\phi)y^2
++(2\phi+\upsilon-2)y^3.
+$$
+
+The initial condition is a top-hat patch,
 
 $$
 y(r,0)=
@@ -51,7 +64,11 @@ The asymptotic comparison uses the small-`\upsilon` expression derived in the
 manuscript,
 
 $$
-R_c \sim \frac{\sigma\sqrt{1-\phi^2}}{2\upsilon}.
+R_c
+\sim
+\frac{\sigma(1-\phi)}{\upsilon\sqrt{2(1-\phi)}}
+=
+\frac{\sigma}{\upsilon}\sqrt{\frac{1-\phi}{2}}.
 $$
 
 By default, the script reproduces the parameter sweep used for the manuscript
@@ -61,9 +78,9 @@ comparison:
 - `phi in {0.1, 0.3, 0.5}`
 - `upsilon` evenly spaced in `[0.001, 0.02]`
 
-## Numerical approach
+## Numerical Approach
 
-The full radial PDE is solved with a semi-implicit finite-difference scheme:
+The radial PDE is solved with a semi-implicit finite-difference scheme:
 
 - diffusion is treated implicitly;
 - the nonlinear reaction term is treated explicitly;
@@ -99,9 +116,9 @@ Run the manuscript-style comparison:
 python NumericsAsymptoticsPolyploid.py --output Figure3.pdf
 ```
 
-This computes the numerical critical radius for the full radial PDE and plots
+This computes the numerical critical radius for the radial PDE and plots
 it against the small-`\upsilon` asymptotic approximation
-`sigma * sqrt(1 - phi^2) / (2 * upsilon)`.
+`sigma * sqrt((1 - phi) / 2) / upsilon`.
 
 Save the figure and the underlying table:
 
@@ -158,9 +175,11 @@ The script writes:
 - The script is intentionally self-contained and does not import the older
   workspace figure scripts.
 - It is the cleaned version of the code used for the manuscript comparison
-  between the asymptotic approximation and the full model.
+  between the asymptotic approximation and the radial continuous-time model.
 - If you want the same naming convention used in the manuscript, use
   `--output Figure3.pdf`.
+- The checked-in `Figure3_data.csv`, `Figure3.pdf`, and `Figure3.png` have been
+  refreshed with the current asymptotic expression above.
 - Numerical thresholds near the expansion/collapse boundary can be sensitive to
   the final integration time and the grid. For manuscript-quality values,
   check convergence by reducing `dr` and `dt`, and increase `--max-time-chunks`
