@@ -21,7 +21,7 @@ The numerical critical radius R_c is the smallest R0 for which the patch
 expands instead of collapsing. The asymptotic comparison curve is the
 small-upsilon approximation
 
-    R_c ~ sigma * sqrt((1 - phi) / 2) / upsilon.
+    R_c ~ (2 / 3) * sigma * sqrt((1 - phi) / 2) / upsilon.
 
 The default parameters reproduce the sweep discussed in the manuscript:
 phi in {0.1, 0.3, 0.5}, sigma = 1, and upsilon in [0.001, 0.02].
@@ -33,6 +33,7 @@ import math
 import os
 import tempfile
 import time
+from collections import deque
 from dataclasses import dataclass, replace
 from pathlib import Path
 
@@ -58,13 +59,9 @@ class SolverConfig:
     resolving the expansion-versus-collapse threshold robustly.
     """
 
-    dr: float = 0.20
-    dt: float = 0.25
-    adaptive_domain_threshold: float = 5000.0
-    target_domain_points: int = 4000
-    max_dr: float = 6.0
-    max_dt: float = 3.0
-    radius_tolerance: float = 0.5
+    dr: float = 0.10
+    dt: float = 0.10
+    radius_tolerance: float = 0.1
     max_bisect_iter: int = 30
     initial_radius: float = 2.0
     min_radius: float = 0.05
@@ -72,19 +69,16 @@ class SolverConfig:
     growth_factor: float = 1.8
     max_halving_steps: int = 16
     min_domain_radius: float = 250.0
-    domain_scale: float = 6.0
+    domain_scale: float = 1.0
     domain_padding: float = 80.0
     chunk_time_floor: float = 300.0
     chunk_time_scale: float = 6.0
     asym_time_factor: float = 0.0
-    max_time_chunks: int = 1
+    max_time_chunks: int = 8
     min_decision_time: float = 60.0
+    velocity_window: float = 40.0
+    velocity_tolerance: float = 1e-9
     front_level: float = 0.5
-    extinction_threshold: float = 1e-4
-    front_margin_abs: float = 2.0
-    shrink_margin_abs: float = 2.0
-    decision_tolerance: float = 0.2
-    outer_trigger_fraction: float = 0.85
     check_interval: float = 2.0
     profile: bool = False
 
@@ -152,7 +146,7 @@ def asymptotic_critical_radius(
     sigma: float,
 ) -> float:
     """
-    Small-upsilon asymptotic critical radius from the manuscript.
+    Corrected small-upsilon asymptotic critical radius (see README).
     """
 
     if upsilon <= 0.0 or not (0.0 < phi < 1.0):
@@ -162,7 +156,18 @@ def asymptotic_critical_radius(
     if prefactor <= 0.0:
         return math.nan
 
-    return sigma * math.sqrt(prefactor) / upsilon
+    return (2.0 / 3.0) * sigma * math.sqrt(prefactor) / upsilon
+
+
+def bistable_equilibria(upsilon: float, phi: float) -> tuple[float, float]:
+    """Return the lower stable and unstable roots, with a stable quadratic formula."""
+
+    a = 1.0 - phi
+    if not (0.0 <= phi < 1.0 and 0.0 < upsilon < a / 5.0):
+        raise ValueError("The radial threshold calculation requires 0 < upsilon < (1-phi)/5.")
+    discriminant = math.sqrt((a - upsilon) * (a - 5.0 * upsilon))
+    root_sum = a + upsilon + discriminant
+    return 2.0 * upsilon / root_sum, root_sum / (2.0 * (2.0 * a - upsilon))
 
 
 class TridiagonalSolver:
@@ -277,7 +282,6 @@ class RadialSemiImplicitSolver:
             int(round(radius_max / self.dr)) + 1,
             dtype=np.float64,
         )
-        self.outer_trigger_radius = config.outer_trigger_fraction * radius_max
         self.linear_solver = TridiagonalSolver(*self._build_system())
 
         size = self.r.size
@@ -354,31 +358,49 @@ class RadialSemiImplicitSolver:
         coeffs: ReactionCoefficients,
         chunk_time: float,
         max_chunks: int,
-    ) -> tuple[bool, dict[str, float | int | str]]:
+    ) -> tuple[bool | None, dict[str, float | int | str]]:
+        """Classify sustained front motion after relaxation; None means unresolved.
+
+        Decisions use three successive late-time velocity windows, never the
+        displacement from the requested (unrounded) top-hat radius. This makes
+        identical grid states receive identical decisions on a fixed domain.
+        A consistent velocity must also cease rapid transient decay. Borderline
+        cases continue until the integration budget is exhausted, then remain
+        unresolved rather than being assigned an arbitrary drift sign.
         """
-        Simulate one top-hat patch and classify it as expanding or collapsing.
 
-        Classification is intentionally based on conservative front movement
-        checks. Runs that reach the final drift fallback are close enough to
-        the threshold that they should be rechecked with a longer integration
-        time and finer `dr`/`dt` before drawing scientific conclusions.
-        """
-
-        state = self.state
-        next_state = self.next_state
-        rhs = self.rhs
-
+        _, unstable_root = bistable_equilibria(coeffs.upsilon, coeffs.phi)
+        state, next_state, rhs = self.state, self.next_state, self.rhs
         state.fill(0.0)
         hot_cells = np.searchsorted(self.r, radius0, side="left")
         state[:hot_cells] = 1.0
-
+        initial_extent = float(self.occupied_radius(state))
         steps_per_chunk = int(np.ceil(chunk_time / self.config.dt))
         total_steps = steps_per_chunk * max_chunks
-        actual_t_max = total_steps * self.config.dt
         check_stride = self.config.check_stride
-        max_extent = radius0
-        final_extent = radius0
-        run_start = time.perf_counter() if self.config.profile else 0.0
+        check_time = check_stride * self.config.dt
+        window_checks = max(1, int(round(self.config.velocity_window / check_time)))
+        history: deque[tuple[float, float]] = deque(maxlen=3 * window_checks + 1)
+        history.append((0.0, initial_extent))
+        run_start = time.perf_counter()
+        max_extent = final_extent = initial_extent
+        velocity = math.nan
+
+        def result(outcome: bool | None, reason: str, step: int):
+            diagnostics = {
+                "reason": reason,
+                "initial_extent": initial_extent,
+                "max_extent": max_extent,
+                "final_extent": final_extent,
+                "radius_max": self.radius_max,
+                "t_max": total_steps * self.config.dt,
+                "decision_time": step * self.config.dt,
+                "front_velocity": velocity,
+                "steps": step,
+            }
+            if self.config.profile:
+                diagnostics["elapsed_s"] = time.perf_counter() - run_start
+            return outcome, diagnostics
 
         for step in range(1, total_steps + 1):
             self._reaction_inplace(state, coeffs, self.reaction_buffer)
@@ -387,127 +409,38 @@ class RadialSemiImplicitSolver:
             self.linear_solver.solve(rhs, next_state)
             np.clip(next_state, 0.0, 1.0, out=next_state)
             state, next_state = next_state, state
-
             if step % check_stride != 0 and step != total_steps:
                 continue
 
             peak = float(np.max(state))
-            final_extent = self.occupied_radius(state)
+            final_extent = float(self.occupied_radius(state))
             max_extent = max(max_extent, final_extent)
             elapsed_time = step * self.config.dt
 
-            if peak < self.config.extinction_threshold:
-                diagnostics = {
-                    "reason": "extinction",
-                    "max_extent": max_extent,
-                    "final_extent": 0.0,
-                    "radius_max": self.radius_max,
-                    "t_max": actual_t_max,
-                    "steps": step,
-                }
-                if self.config.profile:
-                    diagnostics["elapsed_s"] = time.perf_counter() - run_start
-                return False, diagnostics
+            # Once the entire population lies below the unstable equilibrium,
+            # the maximum principle rules out invasion of the upper state.
+            if peak < unstable_root - 1e-10:
+                return result(False, "below_unstable_equilibrium", step)
 
-            if final_extent == 0.0 and peak < self.config.front_level:
-                diagnostics = {
-                    "reason": "below_front_threshold",
-                    "max_extent": max_extent,
-                    "final_extent": final_extent,
-                    "radius_max": self.radius_max,
-                    "t_max": actual_t_max,
-                    "steps": step,
-                }
-                if self.config.profile:
-                    diagnostics["elapsed_s"] = time.perf_counter() - run_start
-                return False, diagnostics
+            if final_extent >= self.r[-1] - 10.0 * self.sigma:
+                return result(None, "front_near_outer_boundary", step)
 
-            if final_extent >= radius0 + self.config.front_margin_abs:
-                diagnostics = {
-                    "reason": "front_grew",
-                    "max_extent": max_extent,
-                    "final_extent": final_extent,
-                    "radius_max": self.radius_max,
-                    "t_max": actual_t_max,
-                    "steps": step,
-                }
-                if self.config.profile:
-                    diagnostics["elapsed_s"] = time.perf_counter() - run_start
-                return True, diagnostics
+            history.append((elapsed_time, final_extent))
+            if len(history) < history.maxlen:
+                continue
+            if history[0][0] < self.config.min_decision_time:
+                continue
+            samples = [history[i * window_checks] for i in range(4)]
+            velocities = np.diff([p[1] for p in samples]) / np.diff([p[0] for p in samples])
+            velocity = float(velocities[-1])
+            tolerance = self.config.velocity_tolerance * self.sigma
+            settled = abs(velocities[-1]) >= 0.8 * abs(velocities[0])
+            if settled and np.all(velocities > tolerance):
+                return result(True, "sustained_positive_velocity", step)
+            if settled and np.all(velocities < -tolerance):
+                return result(False, "sustained_negative_velocity", step)
 
-            if (
-                elapsed_time >= self.config.min_decision_time
-                and final_extent <= max(0.0, radius0 - self.config.shrink_margin_abs)
-            ):
-                diagnostics = {
-                    "reason": "front_receded",
-                    "max_extent": max_extent,
-                    "final_extent": final_extent,
-                    "radius_max": self.radius_max,
-                    "t_max": actual_t_max,
-                    "steps": step,
-                }
-                if self.config.profile:
-                    diagnostics["elapsed_s"] = time.perf_counter() - run_start
-                return False, diagnostics
-
-            if final_extent >= self.outer_trigger_radius:
-                diagnostics = {
-                    "reason": "reached_outer_domain",
-                    "max_extent": max_extent,
-                    "final_extent": final_extent,
-                    "radius_max": self.radius_max,
-                    "t_max": actual_t_max,
-                    "steps": step,
-                }
-                if self.config.profile:
-                    diagnostics["elapsed_s"] = time.perf_counter() - run_start
-                return True, diagnostics
-
-            if step % steps_per_chunk == 0:
-                drift = final_extent - radius0
-                if drift >= self.config.decision_tolerance:
-                    diagnostics = {
-                        "reason": "positive_drift",
-                        "max_extent": max_extent,
-                        "final_extent": final_extent,
-                        "radius_max": self.radius_max,
-                        "t_max": actual_t_max,
-                        "steps": step,
-                    }
-                    if self.config.profile:
-                        diagnostics["elapsed_s"] = time.perf_counter() - run_start
-                    return True, diagnostics
-
-                if drift <= -self.config.decision_tolerance:
-                    diagnostics = {
-                        "reason": "negative_drift",
-                        "max_extent": max_extent,
-                        "final_extent": final_extent,
-                        "radius_max": self.radius_max,
-                        "t_max": actual_t_max,
-                        "steps": step,
-                    }
-                    if self.config.profile:
-                        diagnostics["elapsed_s"] = time.perf_counter() - run_start
-                    return False, diagnostics
-
-        expands = final_extent >= radius0
-        diagnostics = {
-            "reason": "final_drift_sign",
-            "max_extent": max_extent,
-            "final_extent": final_extent,
-            "radius_max": self.radius_max,
-            "t_max": actual_t_max,
-            "steps": total_steps,
-            "warning": (
-                "classified by final drift sign; rerun near-threshold cases "
-                "with longer integration time and finer dr/dt"
-            ),
-        }
-        if self.config.profile:
-            diagnostics["elapsed_s"] = time.perf_counter() - run_start
-        return expands, diagnostics
+        return result(None, "unresolved_at_time_limit", total_steps)
 
 
 class CriticalRadiusEstimator:
@@ -528,24 +461,8 @@ class CriticalRadiusEstimator:
         )
 
     def _effective_config(self, radius0: float) -> SolverConfig:
-        domain_radius = self._required_domain_radius(radius0)
-        if domain_radius <= self.config.adaptive_domain_threshold:
-            dr_eff = self.config.dr
-            dt_eff = self.config.dt
-        else:
-            dr_eff = max(
-                self.config.dr,
-                domain_radius / self.config.target_domain_points,
-            )
-            dr_eff = min(self.config.max_dr, dr_eff)
-
-            dt_eff = max(
-                self.config.dt,
-                self.config.dt * (dr_eff / self.config.dr),
-            )
-            dt_eff = min(self.config.max_dt, dt_eff)
-
-        return replace(self.config, dr=dr_eff, dt=dt_eff)
+        # Keep the requested resolution for every radius in the sweep.
+        return self.config
 
     def _solver_for_radius(
         self,
@@ -597,7 +514,7 @@ class CriticalRadiusEstimator:
         radius_hint: float,
     ) -> tuple[float, float, object]:
         coeffs = ReactionCoefficients.from_parameters(upsilon, phi)
-        trial_cache: dict[float, tuple[bool, dict[str, float | int | str]]] = {}
+        trial_cache: dict[float, tuple[bool | None, dict[str, float | int | str]]] = {}
         max_radius = self._max_radius(asymptotic_radius_value)
 
         def classify(radius0: float) -> tuple[bool, dict[str, float | int | str]]:
@@ -611,7 +528,14 @@ class CriticalRadiusEstimator:
                     max_chunks=effective.max_time_chunks,
                 )
                 self.total_pde_solves += 1
-            return trial_cache[radius0]
+            outcome, diagnostics = trial_cache[radius0]
+            if outcome is None:
+                raise RuntimeError(
+                    f"Unresolved radius {radius0:.6g}: {diagnostics['reason']}. "
+                    "Increase max_time_chunks or enlarge the domain; no threshold "
+                    "will be reported from an unresolved classification."
+                )
+            return outcome, diagnostics
 
         low = max(
             self.config.min_radius,
@@ -681,6 +605,8 @@ class CriticalRadiusEstimator:
         metadata = {
             "pde_solves": self.total_pde_solves - solve_start,
             "elapsed_s": time.perf_counter() - wall_start,
+            "lower_radius": low,
+            "upper_radius": high,
         }
         return critical_radius, metadata
 
@@ -746,8 +672,9 @@ def compute_comparison_curves(
                         f"{metadata['pde_solves']} ({metadata['elapsed_s']:.2f} s)"
                     )
             except RuntimeError as exc:
-                print(f"    Warning: {exc}")
-                numerical_radius = math.nan
+                raise RuntimeError(
+                    f"Sweep stopped at phi={phi}, upsilon={upsilon}: {exc}"
+                ) from exc
 
             print(f"    Rc asymptotic  = {format_value(asymptotic_radius_value)}")
 
@@ -839,7 +766,7 @@ def plot_curves(curves: list[ComparisonCurve], output_path: Path) -> None:
     fig, ax = plt.subplots(figsize=(8, 6))
     for curve in curves:
         color = color_cycle.get(curve.phi, None)
-        ax.plot(curve.upsilons, curve.numerical_radii, "o", color=color, ms=6)
+        ax.plot(curve.upsilons, curve.numerical_radii, "o", color=color, ms=4)
         ax.plot(
             curve.upsilons,
             curve.asymptotic_radii,
@@ -852,7 +779,7 @@ def plot_curves(curves: list[ComparisonCurve], output_path: Path) -> None:
 
     ax.set_xlabel(r"Rate of unreduced gametes $\upsilon$")
     ax.set_ylabel(r"Critical radius $R_c$")
-    ax.set_xlim(0.0, 0.02)
+    ax.set_xlim(0.0, 0.0204)
     ax.set_xticks(np.linspace(0.0, 0.02, 6))
     ax.xaxis.set_major_formatter(FormatStrFormatter("%.3f"))
     ax.yaxis.set_major_locator(MaxNLocator(nbins=6))
@@ -890,7 +817,7 @@ def plot_curves(curves: list[ComparisonCurve], output_path: Path) -> None:
             linestyle="None",
             markerfacecolor="none",
             markersize=7,
-            label=r"Asymptotic $R_c$",
+            label=r"Corrected asymptotic $R_c$",
         ),
     ]
     phi_handle = ax.legend(handles=phi_legend, loc="upper right")
@@ -900,6 +827,9 @@ def plot_curves(curves: list[ComparisonCurve], output_path: Path) -> None:
     plt.tight_layout()
     output_path.parent.mkdir(parents=True, exist_ok=True)
     fig.savefig(output_path, format=output_path.suffix.lstrip("."), bbox_inches="tight")
+    for extension in (".png", ".svg"):
+        if output_path.suffix.lower() != extension:
+            fig.savefig(output_path.with_suffix(extension), dpi=200, bbox_inches="tight")
 
     if "agg" in plt.get_backend().lower():
         plt.close(fig)
@@ -951,7 +881,37 @@ def run_self_tests() -> None:
 
     validate_reaction_implementation()
     validate_numpy_tridiagonal_solver()
-    print("Self-tests passed: reaction equivalence and NumPy tridiagonal fallback.")
+    validate_threshold_classification()
+    validate_asymptotic_prefactor()
+    print("Self-tests passed: reaction, linear solver, threshold decisions, and asymptotic limit.")
+
+
+def validate_threshold_classification() -> None:
+    """Regression for identical patches with different requested radii."""
+
+    config = replace(DEFAULT_SOLVER_CONFIG, dr=0.2, dt=0.25)
+    solver = RadialSemiImplicitSolver(250.0, 1.0, config)
+    coefficients = ReactionCoefficients.from_parameters(0.02, 0.1)
+    for radius, expected in ((21.605, False), (21.795, False), (21.805, True), (21.995, True)):
+        outcome, _ = solver.simulate(radius, coefficients, 300.0, 1)
+        assert outcome is expected, (radius, outcome, expected)
+    outcome, diagnostics = solver.simulate(21.605, coefficients, 20.0, 1)
+    assert outcome is None and diagnostics["reason"] == "unresolved_at_time_limit"
+
+
+def validate_asymptotic_prefactor() -> None:
+    """Compare the leading law with the independently evaluated cubic roots."""
+
+    upsilon = 1e-6
+    for phi in DEFAULT_PHIS:
+        coefficients = ReactionCoefficients.from_parameters(upsilon, phi)
+        stable, unstable, upper = np.sort(np.roots([
+            coefficients.c3, coefficients.c2, coefficients.c1, coefficients.c0,
+        ]))
+        speed = math.sqrt(-coefficients.c3) * (upper + stable - 2 * unstable) / 2
+        np.testing.assert_allclose(
+            asymptotic_critical_radius(upsilon, phi, 1.0), 0.5 / speed, rtol=1e-5,
+        )
 
 
 def run_convergence_check(
@@ -1105,8 +1065,8 @@ def parse_arguments() -> argparse.Namespace:
         type=int,
         default=DEFAULT_SOLVER_CONFIG.max_time_chunks,
         help=(
-            "Maximum number of integration chunks before the final drift "
-            "classification is used. Increase this for borderline thresholds."
+            "Maximum integration budget in chunks. Unresolved cases are "
+            "reported without assigning an expansion/collapse label."
         ),
     )
     parser.add_argument(
@@ -1142,13 +1102,13 @@ def parse_arguments() -> argparse.Namespace:
     parser.add_argument(
         "--convergence-rtol",
         type=float,
-        default=0.15,
+        default=0.01,
         help="Relative tolerance for --convergence-check.",
     )
     parser.add_argument(
         "--convergence-atol",
         type=float,
-        default=2.0,
+        default=0.2,
         help="Absolute tolerance for --convergence-check.",
     )
     return parser.parse_args()

@@ -1,186 +1,129 @@
-# Numerical vs. Asymptotic Critical Radius for Fig. 3
+# Figure 3: numerical and corrected asymptotic critical radius
 
-This folder contains a self-contained script for the comparison described in
-Section 5 of the manuscript: the numerical critical radius of the radial
-continuous-time model versus the small-`\upsilon` asymptotic approximation.
+Numerical analysis accompanying *Spatial Establishment of Autotetraploid
+Populations Follows the Propagation of Bistable Waves of Advance*,
+[Bulletin of Mathematical Biology (2026), 88:139](https://doi.org/10.1007/s11538-026-01707-2).
 
-In the revised manuscript source, this comparison appears as **Fig. 3**.
-Older workspace files were named `Figure2.py` and `Figure2Truth.py`; this
-folder replaces that split with a single script that is easier to read, run,
-and upload to GitHub.
+## Correction to the asymptotic prefactor
 
-## Contents
+**Equation (24) requires a prefactor of 2/3.** For fixed triploid contribution
+φ and small unreduced-gamete production υ, the corrected leading-order result is
 
-- `NumericsAsymptoticsPolyploid.py`: computes the numerical threshold from the
-  radial PDE, evaluates the asymptotic approximation, and plots the
-  comparison.
-- `Figure3.pdf` and `Figure3.png`: current rendered versions of Fig. 3.
-- `Figure3_data.csv`: numerical and asymptotic values used to render Fig. 3.
-- `README.md`: usage notes and a short description of the model.
+![Corrected radius: Rc is asymptotic to (2 sigma / 3 upsilon) times the square root of ((1 minus phi) / 2).](equation-corrected-radius.svg)
 
-## Model summary
+The linear dependence on dispersal scale σ, inverse dependence on υ, and
+square-root dependence on 1 − φ are unchanged. The original expression is
+3/2 times the corrected leading-order prediction.
 
-The numerical experiment starts from the radial reaction-diffusion equation
+### Why the factor appears
 
-$$
-\frac{\partial y}{\partial t}
-=
-\frac{\sigma^2}{2}
-\left(
-\frac{\partial^2 y}{\partial r^2}
-+
-\frac{1}{r}\frac{\partial y}{\partial r}
-\right)
-+
-f(y),
-$$
+Write A = 1 − φ. Both the lower stable equilibrium and the unstable equilibrium
+have first-order corrections:
 
-where the local continuous-time reaction term is
+![Stable root ys = upsilon/A + O(upsilon squared); unstable root yu = 1/2 minus upsilon/(4A) + O(upsilon squared).](equation-equilibria.svg)
 
-$$
-f(y)
-=
-\upsilon
-+(\phi-2\upsilon-1)y
-+3(1-\phi)y^2
-+(2\phi+\upsilon-2)y^3.
-$$
+The planar wave speed uses the following combination:
 
-The initial condition is a top-hat patch,
+![c0 = sigma sqrt(k) (1 + ys minus 2yu)/2, with k = 2A minus upsilon.](equation-wave-speed.svg)
 
-$$
-y(r,0)=
-\begin{cases}
-1, & r < R_0, \\
-0, & r \ge R_0.
-\end{cases}
-$$
+![1 + ys minus 2yu = 3 upsilon/(2A) + O(upsilon squared).](equation-balance.svg)
 
-Here, `R0` is the radius of the initial patch of unreduced gametes. The
-numerical critical radius `Rc` is the smallest initial radius for which the
-patch expands rather than collapses.
+Replacing the unstable equilibrium by 1/2 before expanding discards a term of
+the same order as the lower stable equilibrium. Although the unstable equilibrium
+converges to 1/2, that replacement is insufficient here because the constant
+terms in the speed cancel. Keeping both first-order terms and using the radial
+curvature approximation gives
 
-The asymptotic comparison uses the small-`\upsilon` expression derived in the
-manuscript,
+![c0 = 3 sigma upsilon/(2 sqrt(2A)) + O(upsilon squared), and Rc is approximately D/c0 with D = sigma squared/2.](equation-speed-radius.svg)
 
-$$
-R_c
-\sim
-\frac{\sigma(1-\phi)}{\upsilon\sqrt{2(1-\phi)}}
-=
-\frac{\sigma}{\upsilon}\sqrt{\frac{1-\phi}{2}}.
-$$
+This is a leading-order, large-radius approximation, not an exact formula for
+the invasion threshold of a finite top-hat introduction. Its asymptotic regime
+is small υ/(1 − φ), with φ fixed.
 
-By default, the script reproduces the parameter sweep used for the manuscript
-comparison:
+## Corrected Figure 3
 
-- `sigma = 1.0`
-- `phi in {0.1, 0.3, 0.5}`
-- `upsilon` evenly spaced in `[0.001, 0.02]`
+![Corrected Figure 3. Filled circles show recomputed radial PDE thresholds; open circles show the asymptotic approximation including the factor 2/3.](Figure3.png)
 
-## Numerical Approach
+**Figure 3.** Critical introduction radius as a function of unreduced-gamete
+production υ, for φ = 0.1, 0.3 and 0.5, with σ = 1. Filled circles are numerical
+estimates from the radial PDE; open circles are the corrected leading-order
+approximation. Numerical values were recomputed using the revised stopping
+rule described below. The sweep contains 30 evenly spaced values of υ from
+0.001 to 0.02 for each φ.
 
-The radial PDE is solved with a semi-implicit finite-difference scheme:
+Downloads: [PDF](Figure3.pdf) · [SVG](Figure3.svg) · [numerical data (CSV)](Figure3_data.csv).
 
-- diffusion is treated implicitly;
-- the nonlinear reaction term is treated explicitly;
-- radial symmetry is enforced at the origin through `y_r(0) = 0`;
-- the outer edge of the computational domain uses a zero-flux truncation.
+## Model and numerical method
 
-For each pair `(upsilon, phi)`, the code searches for the critical radius by:
+The simulated radial reaction–diffusion equation is
 
-1. bracketing the transition between collapse and expansion;
-2. refining that bracket by bisection.
+![The radial PDE: y_t = (sigma squared/2)(y_rr + y_r/r) + f(y).](equation-model.svg)
 
-This is the numerical counterpart of the threshold argument in the manuscript:
-patches below `Rc` contract, whereas patches above `Rc` generate outward spread.
+with the reaction term
 
-## Requirements
+![f(y) = upsilon + (phi minus 2 upsilon minus 1)y + 3(1 minus phi)y squared + (2phi + upsilon minus 2)y cubed.](equation-reaction.svg)
 
-- Python 3.11 or newer
-- `numpy`
-- `matplotlib`
-- `scipy` (optional, but recommended)
+The initial condition is a top-hat patch: **y = 1 for r < R0, and y = 0
+elsewhere**. The background subsequently relaxes to the lower stable equilibrium.
+The numerical threshold refers to the initial patch radius R0.
 
-If `scipy` is unavailable, the script falls back to a pure-NumPy tridiagonal
-solver.
+Diffusion is implicit and reaction is explicit. The solver imposes radial
+symmetry at the origin and zero flux at the outer boundary. The default grid
+uses `dr = 0.10`, `dt = 0.10`, and a bisection tolerance of `0.10` radius units.
+The domain radius is `max(250, R0 + 80)`; spatial resolution stays fixed across
+the sweep.
 
-On systems where `python` is not mapped to Python 3, use `python3` in the
-commands below.
+### Correction to the stopping rule
 
-## Usage
+The earlier implementation could classify a patch from the sign of its final
+displacement relative to the requested radius. Since the initial top-hat is
+rounded onto the grid, this could assign opposite outcomes to identical initial
+states. Initial transients could also be mistaken for long-term expansion.
 
-Run the manuscript-style comparison:
+The revised implementation:
+
+- Uses three successive 40-time-unit windows of measured front velocity after
+  at least 60 time units of relaxation. Velocities must have the same sign,
+  exceed the numerical tolerance, and no longer be rapidly decaying.
+- Declares collapse if the entire state falls below the unstable equilibrium.
+- Retains an unresolved outcome when the time budget expires; an unresolved
+  classification stops the sweep instead of entering the bisection as a label.
+- Searches the expansion/collapse boundary by bracketing and bisection.
+
+The velocity rule is a numerical diagnostic, not a proof of the continuum
+threshold. Grid, domain and integration-time checks remain necessary near the
+boundary. See [VALIDATION.md](VALIDATION.md) for checks on the regenerated figure.
+
+## Reproduce the figure
+
+Requires Python 3.11 or newer, NumPy and Matplotlib. SciPy is recommended for
+speed; a NumPy tridiagonal fallback is provided.
 
 ```bash
-python NumericsAsymptoticsPolyploid.py --output Figure3.pdf
+python NumericsAsymptoticsPolyploid.py --output Figure3.pdf --csv Figure3_data.csv
 ```
 
-This computes the numerical critical radius for the radial PDE and plots
-it against the small-`\upsilon` asymptotic approximation
-`sigma * sqrt((1 - phi) / 2) / upsilon`.
-
-Save the figure and the underlying table:
+This writes PDF, PNG and SVG versions of the figure and the CSV table. Add
+`--profile` for timing information.
 
 ```bash
-python NumericsAsymptoticsPolyploid.py \
-  --output Figure3.pdf \
-  --csv Figure3_data.csv
+python NumericsAsymptoticsPolyploid.py --self-test --convergence-check
 ```
 
-Run with timing diagnostics:
+For a quick, smaller sweep:
 
 ```bash
-python NumericsAsymptoticsPolyploid.py \
-  --output Figure3.pdf \
-  --csv Figure3_data.csv \
-  --profile
+python NumericsAsymptoticsPolyploid.py --output test.pdf \
+  --upsilon-min 0.015 --upsilon-max 0.02 --upsilon-count 3 --phis 0.1
 ```
 
-Run a smaller sweep as a quick test:
+## Equation display
+
+Equations are embedded as local SVG images so that they remain readable in
+GitHub and other Markdown viewers without relying on a particular math renderer.
+Their editable mathematical source is in [render_readme_equations.py](render_readme_equations.py).
+Regenerate them with:
 
 ```bash
-python NumericsAsymptoticsPolyploid.py \
-  --output test.pdf \
-  --upsilon-min 0.015 \
-  --upsilon-max 0.02 \
-  --upsilon-count 3 \
-  --phis 0.1
+python render_readme_equations.py
 ```
-
-Run lightweight validation checks without producing a figure:
-
-```bash
-python NumericsAsymptoticsPolyploid.py --self-test
-```
-
-Run a short convergence check comparing `dr = 0.20, dt = 0.25` with
-`dr = 0.10, dt = 0.10` for one representative parameter point:
-
-```bash
-python NumericsAsymptoticsPolyploid.py --convergence-check
-```
-
-## Output
-
-The script writes:
-
-- a PDF figure with filled circles for the numerical critical radius and open
-  circles for the asymptotic approximation;
-- optionally, a CSV file with the columns
-  `phi`, `upsilon`, `numerical_radius`, and `asymptotic_radius`.
-
-## Notes
-
-- The script is intentionally self-contained and does not import the older
-  workspace figure scripts.
-- It is the cleaned version of the code used for the manuscript comparison
-  between the asymptotic approximation and the radial continuous-time model.
-- If you want the same naming convention used in the manuscript, use
-  `--output Figure3.pdf`.
-- The checked-in `Figure3_data.csv`, `Figure3.pdf`, and `Figure3.png` have been
-  refreshed with the current asymptotic expression above.
-- Numerical thresholds near the expansion/collapse boundary can be sensitive to
-  the final integration time and the grid. For manuscript-quality values,
-  check convergence by reducing `dr` and `dt`, and increase `--max-time-chunks`
-  for cases that remain close to the threshold.
