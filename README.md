@@ -82,26 +82,6 @@ uses `dr = 0.10`, `dt = 0.10`, and a bisection tolerance of `0.10` radius units.
 The domain radius is `max(250, R0 + 80)`; spatial resolution stays fixed across
 the sweep.
 
-### Correction to the stopping rule
-
-The earlier implementation could classify a patch from the sign of its final
-displacement relative to the requested radius. Since the initial top-hat is
-rounded onto the grid, this could assign opposite outcomes to identical initial
-states. Initial transients could also be mistaken for long-term expansion.
-
-The revised implementation:
-
-- Uses three successive 40-time-unit windows of measured front velocity after
-  at least 60 time units of relaxation. Velocities must have the same sign,
-  exceed the numerical tolerance, and no longer be rapidly decaying.
-- Declares collapse if the entire state falls below the unstable equilibrium.
-- Retains an unresolved outcome when the time budget expires; an unresolved
-  classification stops the sweep instead of entering the bisection as a label.
-- Searches the expansion/collapse boundary by bracketing and bisection.
-
-The velocity rule is a numerical diagnostic, not a proof of the continuum
-threshold. Grid, domain and integration-time checks remain necessary near the
-boundary. See [VALIDATION.md](VALIDATION.md) for checks on the regenerated figure.
 
 ## Reproduce the figure
 
@@ -126,13 +106,3 @@ python NumericsAsymptoticsPolyploid.py --output test.pdf \
   --upsilon-min 0.015 --upsilon-max 0.02 --upsilon-count 3 --phis 0.1
 ```
 
-## Equation display
-
-Equations are embedded as local SVG images so that they remain readable in
-GitHub and other Markdown viewers without relying on a particular math renderer.
-Their editable mathematical source is in [render_readme_equations.py](render_readme_equations.py).
-Regenerate them with:
-
-```bash
-python render_readme_equations.py
-```
