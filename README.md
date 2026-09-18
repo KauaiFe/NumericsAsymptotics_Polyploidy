@@ -12,8 +12,13 @@ Populations Follows the Propagation of Bistable Waves of Advance*,
 ![Corrected radius: Rc is asymptotic to (2 sigma / 3 upsilon) times the square root of ((1 minus phi) / 2).](equation-corrected-radius.svg)
 
 The linear dependence on dispersal scale σ, inverse dependence on υ, and
-square-root dependence on 1 − φ are unchanged. The original expression is
-3/2 times the corrected leading-order prediction.
+square-root dependence on 1 − φ are unchanged. The published expression is
+3/2 times the corrected leading-order prediction: it requires an initial patch
+radius 50% larger. It therefore imposes a more stringent establishment criterion
+and predicts establishment for a smaller set of introductions. In this sense,
+the published approximation is conservative about establishment capacity relative
+to the approximation with the 2/3 prefactor. This comparison of the two formulas
+does not establish a rigorous upper bound for the full radial PDE threshold.
 
 ### Why the factor appears
 
@@ -28,11 +33,15 @@ The planar wave speed uses the following combination:
 
 ![1 + ys minus 2yu = 3 upsilon/(2A) + O(upsilon squared).](equation-balance.svg)
 
-Replacing the unstable equilibrium by 1/2 before expanding discards a term of
-the same order as the lower stable equilibrium. Although the unstable equilibrium
-converges to 1/2, that replacement is insufficient here because the constant
-terms in the speed cancel. Keeping both first-order terms and using the radial
-curvature approximation gives
+For simplicity, the published derivation approximates the unstable equilibrium
+by its limiting value, 1/2. That limit is correct. However, the lower stable
+equilibrium approaches zero and the unstable equilibrium approaches 1/2 at the
+same asymptotic order: both deviations are O(υ), at fixed φ. Replacing the
+unstable equilibrium by exactly 1/2 before expanding therefore discards a term
+of the same order as the retained lower-equilibrium contribution. Because the
+constant terms in the wave speed cancel, both first-order corrections must be
+retained to obtain the leading coefficient. Doing so, and then using the radial
+curvature approximation, gives
 
 ![c0 = 3 sigma upsilon/(2 sqrt(2A)) + O(upsilon squared), and Rc is approximately D/c0 with D = sigma squared/2.](equation-speed-radius.svg)
 
