@@ -4,19 +4,18 @@ Numerical analysis accompanying *Spatial Establishment of Autotetraploid
 Populations Follows the Propagation of Bistable Waves of Advance*,
 [Bulletin of Mathematical Biology (2026), 88:139](https://doi.org/10.1007/s11538-026-01707-2).
 
-## Correction to the asymptotic prefactor
+## Update to the asymptotic approximation
 
-**Equation (24) requires a prefactor of 2/3.** For fixed triploid contribution
-φ and small unreduced-gamete production υ, the corrected leading-order result is
+**Equation (24) in the main manuscript requires a prefactor of 2/3.** For fixed triploid contribution
+φ and small unreduced-gamete production υ, the updated leading-order result is
 
-![Corrected radius: Rc is asymptotic to (2 sigma / 3 upsilon) times the square root of ((1 minus phi) / 2).](equation-corrected-radius.svg)
+![ Rc is asymptotic to (2 sigma / 3 upsilon) times the square root of ((1 minus phi) / 2).](equation-corrected-radius.svg)
 
 The linear dependence on dispersal scale σ, inverse dependence on υ, and
 square-root dependence on 1 − φ are unchanged. The published expression is
-3/2 times the corrected leading-order prediction: it requires an initial patch
-radius 50% larger. It therefore imposes a more stringent establishment criterion
-and predicts establishment for a smaller set of introductions. In this sense,
-the published approximation is conservative about establishment capacity relative
+3/2 times the corrected leading-order prediction. It therefore imposes a more stringent
+establishment criterion and predicts establishment for a smaller set of introductions. 
+In this sense, the published approximation is conservative about establishment capacity relative
 to the approximation with the 2/3 prefactor. This comparison of the two formulas
 does not establish a rigorous upper bound for the full radial PDE threshold.
 
@@ -49,9 +48,9 @@ This is a leading-order, large-radius approximation, not an exact formula for
 the invasion threshold of a finite top-hat introduction. Its asymptotic regime
 is small υ/(1 − φ), with φ fixed.
 
-## Corrected Figure 3
+## Updated Figure 3
 
-![Corrected Figure 3. Filled circles show recomputed radial PDE thresholds; open circles show the asymptotic approximation including the factor 2/3.](Figure3.png)
+![ Figure 3. Filled circles show recomputed radial PDE thresholds; open circles show the asymptotic approximation including the factor 2/3.](Figure3.png)
 
 **Figure 3.** Critical introduction radius as a function of unreduced-gamete
 production υ, for φ = 0.1, 0.3 and 0.5, with σ = 1. Filled circles are numerical
